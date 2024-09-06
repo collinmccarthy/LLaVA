@@ -12,8 +12,16 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
 ]
+
+# Changed
 dependencies = [
+    # Original torch dependencies, if using `pip install -e . --index-url https://download.pytorch.org/whl/cu121`
     "torch==2.1.2", "torchvision==0.16.2",
+
+    # New torch dependencies for CUDA 12.4, if using `pip install -e . --index-url https://download.pytorch.org/whl/cu124`
+    # "torch==2.4.0", "torchvision",
+
+    # Other dependencies (not modified)
     "transformers==4.37.2", "tokenizers==0.15.1", "sentencepiece==0.1.99", "shortuuid",
     "accelerate==0.21.0", "peft", "bitsandbytes",
     "pydantic", "markdown2[all]", "numpy", "scikit-learn==1.2.2",
@@ -35,3 +43,7 @@ exclude = ["assets*", "benchmark*", "docs", "dist*", "playground*", "scripts*", 
 
 [tool.wheel]
 exclude = ["assets*", "benchmark*", "docs", "dist*", "playground*", "scripts*", "tests*"]
+
+# Add our line length for black, only applied if saving changes (use `#fmt: off` if needed)
+[tool.black]
+line-length = 100
