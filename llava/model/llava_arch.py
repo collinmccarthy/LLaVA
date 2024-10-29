@@ -313,7 +313,8 @@ class LlavaMetaForCausalLM(ABC):
         else:
             new_labels = new_labels_padded
 
-        # Update: always return attention mask if we padded (if any values are False)
+        # Always return attn mask if we padded (if any values are False)
+        # This is required for batch inference w/ anyres padding
         if attention_mask.all():  # Not padded
             if _attention_mask is None:
                 attention_mask = None

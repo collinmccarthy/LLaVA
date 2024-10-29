@@ -1,22 +1,26 @@
 #!/bin/bash
+# srun -p mllm --gres gpu:8 bash scripts/v1_6/eval/seed.sh
 
 gpu_list="${CUDA_VISIBLE_DEVICES:-0}"
 IFS=',' read -ra GPULIST <<< "$gpu_list"
 
 CHUNKS=${#GPULIST[@]}
 
-CKPT="llava-v1.5-13b"
+CONV_MODE=llava_llama_3
+CKPT=$1
+CKPT_DIR=${2-'checkpoints'}
 
 for IDX in $(seq 0 $((CHUNKS-1))); do
     CUDA_VISIBLE_DEVICES=${GPULIST[$IDX]} python -m llava.eval.model_vqa_loader \
-        --model-path checkpoints/llava-v1.5-13b \
-        --question-file ./playground/data/eval/seed_bench/llava-seed-bench.jsonl \
+        --model-path ${CKPT_DIR}/${CKPT} \
+        --question-file ./playground/data/eval/seed_bench/llava-seed-bench-image.jsonl \
         --image-folder ./playground/data/eval/seed_bench \
         --answers-file ./playground/data/eval/seed_bench/answers/$CKPT/${CHUNKS}_${IDX}.jsonl \
         --num-chunks $CHUNKS \
         --chunk-idx $IDX \
         --temperature 0 \
-        --conv-mode vicuna_v1 &
+        --square_eval True \
+        --conv-mode $CONV_MODE &
 done
 
 wait
@@ -35,5 +39,5 @@ done
 python scripts/convert_seed_for_submission.py \
     --annotation-file ./playground/data/eval/seed_bench/SEED-Bench.json \
     --result-file $output_file \
-    --result-upload-file ./playground/data/eval/seed_bench/answers_upload/llava-v1.5-13b.jsonl
+    --result-upload-file ./playground/data/eval/seed_bench/answers_upload/llava-v1.6-7b.jsonl
 

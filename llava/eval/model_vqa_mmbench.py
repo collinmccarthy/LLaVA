@@ -58,6 +58,14 @@ def eval_model(args):
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
 
+    if args.square_eval:
+        model.config.image_grid_pinpoints = [
+            [
+                672,
+                672
+            ]
+        ]
+
     questions = pd.read_table(os.path.expanduser(args.question_file))
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
     answers_file = os.path.expanduser(args.answers_file)
@@ -118,6 +126,7 @@ def eval_model(args):
                     num_beams=args.num_beams,
                     # no_repeat_ngram_size=3,
                     max_new_tokens=1024,
+                    pad_token_id=tokenizer.pad_token_id,
                     use_cache=True)
 
             outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
@@ -155,6 +164,7 @@ if __name__ == "__main__":
     parser.add_argument("--all-rounds", action="store_true")
     parser.add_argument("--single-pred-prompt", action="store_true")
     parser.add_argument("--lang", type=str, default="en")
+    parser.add_argument("--square_eval", type=bool, default=False)
     args = parser.parse_args()
 
     eval_model(args)

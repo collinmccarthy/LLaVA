@@ -82,6 +82,7 @@ class TrainingArguments(transformers.TrainingArguments):
     optim: str = field(default="adamw_torch")
     remove_unused_columns: bool = field(default=False)
     freeze_mm_mlp_adapter: bool = field(default=False)
+    unfreeze_mm_vision_tower: bool = field(default=False)
     mpt_attn_impl: Optional[str] = field(default="triton")
     model_max_length: int = field(
         default=512,
@@ -108,7 +109,9 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_dropout: float = 0.05
     lora_weight_path: str = ""
     lora_bias: str = "none"
+    lora_qv_proj_only: bool = False
     mm_projector_lr: Optional[float] = None
+    mm_vision_tower_lr: Optional[float] = None
     group_by_modality_length: bool = field(default=False)
 
 
@@ -166,7 +169,18 @@ def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
     return to_return
 
 
-def find_all_linear_names(model):
+def get_vision_tower_state_maybe_zero_3(named_params, keys_to_match=['']):
+    to_return = {k: t for k, t in named_params if any(
+        key_match in k for key_match in keys_to_match)}
+    to_return = {k: maybe_zero_3(v, ignore_status=True).cpu()
+                 for k, v in to_return.items()}
+    return to_return
+
+
+def find_all_linear_names(model, qv_proj_only=False):
+    if qv_proj_only:
+        rank0_print('Only add LoRA to QV proj')
+        return ['q_proj', 'v_proj']
     cls = torch.nn.Linear
     lora_module_names = set()
     multimodal_keywords = ['mm_projector', 'vision_tower', 'vision_resampler']
@@ -392,7 +406,97 @@ def preprocess_llama_2(
                 round_len = len(tokenizer(rou).input_ids)
                 instruction_len = len(tokenizer(parts[0]).input_ids) - 2
 
-            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
+            target[cur_len: cur_len + instruction_len] = IGNORE_INDEX
+
+            cur_len += round_len
+        target[cur_len:] = IGNORE_INDEX
+
+        if cur_len < tokenizer.model_max_length:
+            if cur_len != total_len:
+                target[:] = IGNORE_INDEX
+                print(
+                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                    f" (ignored)"
+                )
+
+    return dict(
+        input_ids=input_ids,
+        labels=targets,
+    )
+
+
+def preprocess_llama3(
+    sources,
+    tokenizer: transformers.PreTrainedTokenizer,
+    has_image: bool = False
+) -> Dict:
+    conv = conversation_lib.default_conversation.copy()
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+    # Apply prompt templates
+    conversations = []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != conv.roles[0]:
+            # Skip the first one if it is not from human
+            source = source[1:]
+
+        conv.messages = []
+        for j, sentence in enumerate(source):
+            role = roles[sentence["from"]]
+            assert role == conv.roles[j % 2], f"{i}"
+            conv.append_message(role, sentence["value"])
+        conversations.append(conv.get_prompt())
+
+    # Tokenize conversations
+
+    if has_image:
+        input_ids = torch.stack(
+            [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    else:
+        input_ids = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
+
+    targets = input_ids.clone()
+    assert conv.sep_style == conversation_lib.SeparatorStyle.MPT
+
+    # Mask targets
+    sep = conv.sep + conv.roles[1]
+    for conversation, target in zip(conversations, targets):
+        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+        rounds = conversation.split(conv.sep)
+        re_rounds = [conv.sep.join(rounds[:3])]
+        for conv_idx in range(3, len(rounds), 2):
+            re_rounds.append(conv.sep.join(rounds[conv_idx:conv_idx + 2]))
+        cur_len = 0
+        target[:cur_len] = IGNORE_INDEX
+        for i, rou in enumerate(re_rounds):
+            if rou == "":
+                break
+
+            parts = rou.split(sep)
+            if len(parts) != 2:
+                break
+            parts[0] += sep
+
+            if has_image:
+                round_len = len(tokenizer_image_token(rou, tokenizer)) + 1
+                instruction_len = len(
+                    tokenizer_image_token(parts[0], tokenizer))
+            else:
+                round_len = len(tokenizer(rou).input_ids) + 1
+                instruction_len = len(tokenizer(parts[0]).input_ids)
+
+            if i > 0:
+                round_len -= 1
+                instruction_len -= 1
+
+            target[cur_len: cur_len + instruction_len] = IGNORE_INDEX
 
             cur_len += round_len
         target[cur_len:] = IGNORE_INDEX
@@ -627,6 +731,8 @@ def preprocess(
         return preprocess_v1(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "mpt":
         return preprocess_mpt(sources, tokenizer, has_image=has_image)
+    if conversation_lib.default_conversation.version == "llama3":
+        return preprocess_llama3(sources, tokenizer, has_image=has_image)
     # add end signal and concatenate together
     conversations = []
     for source in sources:
@@ -713,8 +819,14 @@ class LazySupervisedDataset(Dataset):
                         result.paste(pil_img, ((height - width) // 2, 0))
                         return result
                 image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                image_size = image.size
+                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]  # (640, 480)
+            elif self.data_args.image_aspect_ratio == "anyres":
+                image_size = image.size
+                image = process_anyres_image(       # torch.Size([5, 3, 336, 336])
+                    image, processor, self.data_args.image_grid_pinpoints)
             else:
+                image_size = image.size
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
@@ -732,10 +844,12 @@ class LazySupervisedDataset(Dataset):
         # image exist in the data
         if 'image' in self.list_data_dict[i]:
             data_dict['image'] = image
+            data_dict['image_size'] = image_size
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            data_dict['image_size'] = (crop_size['height'], crop_size['width'])
         return data_dict
 
 
@@ -765,10 +879,12 @@ class DataCollatorForSupervisedDataset(object):
 
         if 'image' in instances[0]:
             images = [instance['image'] for instance in instances]
+            image_sizes = [instance['image_size'] for instance in instances]
             if all(x is not None and x.shape == images[0].shape for x in images):
                 batch['images'] = torch.stack(images)
             else:
                 batch['images'] = images
+            batch['image_sizes'] = image_sizes
 
         return batch
 
@@ -783,6 +899,23 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
                 data_collator=data_collator)
+
+
+def unfreeze_vit(vision_tower):
+    for _, p in vision_tower.named_parameters():
+        p.requires_grad = True
+
+
+def format_bytes(size):
+    billion = 10**9
+    million = 10**6
+
+    if size >= billion:
+        return f"{size / billion:.2f}B"
+    elif size >= million:
+        return f"{size / million:.2f}M"
+    else:
+        return f"{size} bytes"
 
 
 def train(attn_implementation=None):
@@ -812,7 +945,15 @@ def train(attn_implementation=None):
                 bnb_4bit_quant_type=training_args.quant_type # {'fp4', 'nf4'}
             )
         ))
-
+    model_max_length_args = {}
+    if 'llava-v1.6-8b' not in model_args.model_name_or_path:
+        config = transformers.AutoConfig.from_pretrained(
+            model_args.model_name_or_path, trust_remote_code=True)
+        if config.max_position_embeddings < training_args.model_max_length:
+            rank0_print(
+                f'Set the max_position_embeddings from {config.max_position_embeddings} to {training_args.model_max_length}')
+            model_max_length_args.update(
+                {'max_position_embeddings': training_args.model_max_length})
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
@@ -829,7 +970,8 @@ def train(attn_implementation=None):
                 cache_dir=training_args.cache_dir,
                 attn_implementation=attn_implementation,
                 torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-                **bnb_model_from_pretrained_args
+                **bnb_model_from_pretrained_args,
+                **model_max_length_args
             )
     else:
         model = transformers.LlamaForCausalLM.from_pretrained(
@@ -862,7 +1004,7 @@ def train(attn_implementation=None):
         lora_config = LoraConfig(
             r=training_args.lora_r,
             lora_alpha=training_args.lora_alpha,
-            target_modules=find_all_linear_names(model),
+            target_modules=find_all_linear_names(model, training_args.lora_qv_proj_only),
             lora_dropout=training_args.lora_dropout,
             bias=training_args.lora_bias,
             task_type="CAUSAL_LM",
@@ -901,7 +1043,13 @@ def train(attn_implementation=None):
     elif model_args.version == "v0.5":
         tokenizer.pad_token = tokenizer.unk_token
     else:
-        tokenizer.pad_token = tokenizer.unk_token
+        if tokenizer.pad_token is None:
+            rank0_print("Adding pad token as '<pad>'")
+            smart_tokenizer_and_embedding_resize(
+                special_tokens_dict=dict(pad_token="<pad>"),
+                tokenizer=tokenizer,
+                model=model,
+            )
         if model_args.version in conversation_lib.conv_templates:
             conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
         else:
@@ -912,7 +1060,6 @@ def train(attn_implementation=None):
             model_args=model_args,
             fsdp=training_args.fsdp
         )
-        
         vision_tower = model.get_vision_tower()
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
 
@@ -920,6 +1067,11 @@ def train(attn_implementation=None):
         data_args.is_multimodal = True
 
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
+        if data_args.image_aspect_ratio == 'anyres':
+            base_size = vision_tower.config.image_size
+            grids = [[1, 2], [2, 1], [2, 2], [3, 1], [1, 3]]
+            model.config.image_grid_pinpoints = data_args.image_grid_pinpoints = [
+                [g[0]*base_size, g[1]*base_size] for g in grids]
         model.config.tokenizer_padding_side = tokenizer.padding_side
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
 
@@ -934,14 +1086,33 @@ def train(attn_implementation=None):
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = False
 
+        model.config.unfreeze_mm_vision_tower = training_args.unfreeze_mm_vision_tower
+        if training_args.unfreeze_mm_vision_tower:
+            lr_of_vit = training_args.mm_vision_tower_lr if training_args.mm_vision_tower_lr is not None else training_args.learning_rate
+            lr_of_mlp = training_args.mm_projector_lr if training_args.mm_projector_lr is not None else training_args.learning_rate
+            training_args.mm_projector_lr = lr_of_mlp
+            unfreeze_vit(vision_tower)
+            rank0_print(
+                f'Tune the entire model! The LR of ViT is {lr_of_vit}. The LR of MLP is {lr_of_mlp}. The LR of LLM is {training_args.learning_rate}')
+
+        # Calculate total parameters and trainable parameters
+        total_params = sum(p.numel() for p in model.get_model().parameters())
+        trainable_params = sum(
+            p.numel() for p in model.get_model().parameters() if p.requires_grad)
+
+        rank0_print(f"Total parameters: {format_bytes(total_params)}")
+        rank0_print(f"Trainable parameters: {format_bytes(trainable_params)}")
+
         if training_args.bits in [4, 8]:
             model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
 
         model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_projector_lr = training_args.mm_projector_lr
+        model.config.mm_vision_tower_lr = training_args.mm_vision_tower_lr
         training_args.use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+        model.config.pad_token_id = tokenizer.pad_token_id
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer

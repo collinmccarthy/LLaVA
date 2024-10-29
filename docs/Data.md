@@ -2,28 +2,77 @@
 
 | Data file name | Size |
 | --- | ---: |
-| [llava_instruct_150k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/blob/main/llava_instruct_150k.json) | 229 MB |
-| [llava_instruct_80k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/blob/main/llava_instruct_80k.json) | 229 MB |
-| [conversation_58k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/blob/main/conversation_58k.json) | 126 MB |
-| [detail_23k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/blob/main/detail_23k.json) | 20.5 MB |
-| [complex_reasoning_77k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/blob/main/complex_reasoning_77k.json) | 79.6 MB |
+| [open-llava-next_instruct_mix1M.json](https://huggingface.co/datasets/Lin-Chen/Open-LLaVA-NeXT-mix1M/blob/main/open-llava-next_instruct_mix1M.json) | 1.64 GB |
+| [vqa_collection.zip](https://huggingface.co/datasets/Lin-Chen/Open-LLaVA-NeXT-mix1M/blob/main/vqa_collection.zip) | 30.20 GB |
 
-### Pretraining Dataset
-The pretraining dataset used in this release is a subset of CC-3M dataset, filtered with a more balanced concept coverage distribution.  Please see [here](https://huggingface.co/datasets/liuhaotian/LLaVA-CC3M-Pretrain-595K) for a detailed description of the dataset structure and how to download the images.
+We have made every effort to align our training data with that of LLaVA-NeXT. However, we were unable to access the tens of thousands of real user interaction data that LLaVA-NeXT collected. As a result, we used 200K [ALLaVA-Instruct-VFLAN-4V](https://huggingface.co/datasets/Vision-Flan/vision-flan_191-task_1k/blob/main/image_191-task_1k.zip) data as a substitute. Additionally, since [TextVQA](https://dl.fbaipublicfiles.com/textvqa/images/train_val_images.zip) has been included in the training data of most existing LMMs, we chose to retain it to enable fair comparisons with other LMMs.
 
-If you already have CC-3M dataset on your disk, the image names follow this format: `GCC_train_000000000.jpg`.  You may edit the `image` field correspondingly if necessary.
+### Dataset
+The dataset, based on [sharegpt4v_mix665k](https://huggingface.co/datasets/Lin-Chen/ShareGPT4V/blob/main/sharegpt4v_mix665k_cap23k_coco-ap9k_lcs3k_sam9k_div2k.json), has been expanded to include ALLaVA-Instruct-VFLAN-4V, DocVQA, SynDog-EN, ChartQA, DVQA, AI2D, and GeoQA+, totaling 1M image-text pairs.
 
-| Data | Chat File | Meta Data | Size |
-| --- |  --- |  --- | ---: |
-| CC-3M Concept-balanced 595K | [chat.json](https://huggingface.co/datasets/liuhaotian/LLaVA-CC3M-Pretrain-595K/blob/main/chat.json) | [metadata.json](https://huggingface.co/datasets/liuhaotian/LLaVA-CC3M-Pretrain-595K/blob/main/metadata.json) | 211 MB
-| LAION/CC/SBU BLIP-Caption Concept-balanced 558K | [blip_laion_cc_sbu_558k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-Pretrain/blob/main/blip_laion_cc_sbu_558k.json) | [metadata.json](#) | 181 MB
+### Prepare Images
 
-**Important notice**: Upon the request from the community, as ~15% images of the original CC-3M dataset are no longer accessible, we upload [`images.zip`](https://huggingface.co/datasets/liuhaotian/LLaVA-CC3M-Pretrain-595K/blob/main/images.zip) for better reproducing our work in research community. It must not be used for any other purposes. The use of these images must comply with the CC-3M license. This may be taken down at any time when requested by the original CC-3M dataset owner or owners of the referenced images.
+First, download all images we used.
 
-### GPT-4 Prompts
+- LAION-CC-SBU-558K: [images.zip](https://huggingface.co/datasets/liuhaotian/LLaVA-Pretrain/blob/main/images.zip)
+- COCO: [train2017](http://images.cocodataset.org/zips/train2017.zip)
+- WebData: [images](https://drive.google.com/drive/folders/1tCUQ-sq6vdshZVkF0ZeF3K4eztkXJgax?usp=sharing). Only for academic usage.
+- SAM: [images](https://drive.google.com/file/d/1dKumdOKSXtV7lIXdrG7jsIK_z2vZv2gs/view?usp=drive_link)
+- GQA: [images](https://downloads.cs.stanford.edu/nlp/data/gqa/images.zip)
+- OCR-VQA: [download script](https://drive.google.com/drive/folders/1_GYPY5UkUy7HIcR0zq3ZCFgeZN7BAfm_?usp=sharing). We save all files as `.jpg`
+- TextVQA: [trainvalimages](https://dl.fbaipublicfiles.com/textvqa/images/train_val_images.zip)
+- VisualGenome: [part1](https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip), [part2](https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip)
+- A [collection](https://huggingface.co/datasets/Lin-Chen/Open-LLaVA-NeXT-mix1M/blob/main/vqa_collection.zip) of several VQA datasets: DocVQA, SynDog-EN, ChartQA, DVQA, AI2D, and GeoQA+.
+- ALLaVA-Instruct-VFLAN-4V: [image_191-task_1k](https://huggingface.co/datasets/Vision-Flan/vision-flan_191-task_1k/blob/main/image_191-task_1k.zip)
 
-We provide our prompts and few-shot samples for GPT-4 queries, to better facilitate research in this domain.  Please check out the [`prompts`](https://github.com/haotian-liu/LLaVA/tree/main/playground/data/prompts) folder for three kinds of questions: conversation, detail description, and complex reasoning.
+Then, organize the data as follows:
 
-They are organized in a format of `system_message.txt` for system message, pairs of `abc_caps.txt` for few-shot sample user input, and `abc_conv.txt` for few-shot sample reference output.
-
-Note that you may find them in different format. For example, `conversation` is in `jsonl`, and detail description is answer-only.  The selected format in our preliminary experiments works slightly better than a limited set of alternatives that we tried: `jsonl`, more natural format, answer-only.  If interested, you may try other variants or conduct more careful study in this.  Contributions are welcomed!
+```none
+Open-LLaVA-NeXT
+├── ...
+├── data
+│   ├── llava
+│   │   ├── llava_pretrain
+│   │   │   ├── images
+│   ├── coco
+│   │   ├── train2017
+│   ├── sam
+│   │   ├── images
+│   ├── gqa
+│   │   ├── images
+│   ├── ocr_vqa
+│   │   ├── images
+│   ├── textvqa
+│   │   ├── train_images
+│   ├── vg
+│   │   ├── VG_100K
+│   │   ├── VG_100K_2
+│   ├── open-llava-next
+│   │   ├── open-llava-next_instruct_mix1M.json
+│   ├── web-celebrity
+│   │   ├── images
+│   ├── web-landmark
+│   │   ├── images
+│   ├── wikiart
+│   │   ├── images
+│   ├── allava_vflan
+│   │   ├── images
+│   │   │   ├── images_191task_1k
+│   ├── share_textvqa
+│   │   ├── images
+│   ├── ai2d
+│   │   ├── images
+│   ├── chatqa
+│   │   ├── train
+│   │   │   ├── png
+│   ├── docvqa
+│   │   ├── train
+│   │   │   ├── documents
+│   ├── dvqa
+│   │   ├── images
+│   ├── geoqa+ 
+│   │   ├── images
+│   ├── synthdog-en
+│   │   ├── images
+├── ...
+```
