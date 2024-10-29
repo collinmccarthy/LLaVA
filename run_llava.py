@@ -162,15 +162,13 @@ def eval_model(
                 f" extra_image_grid_pinpoints={extra_image_grid_pinpoints}."
             )
 
-    images_tensor = process_images(images, image_processor, model.config).to(
-        model.device, dtype=torch.float16
-    )
+    images_tensor = process_images(images, image_processor, model.config)
+    assert isinstance(images_tensor, torch.Tensor)
+    images_tensor = images_tensor.to(model.device, dtype=torch.float16)
 
-    input_ids = (
-        tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
-        .unsqueeze(0)
-        .to(model.device)
-    )
+    input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
+    assert isinstance(input_ids, torch.Tensor)
+    input_ids = input_ids.unsqueeze(0).to(model.device)
 
     # Added following https://github.com/haotian-liu/LLaVA/pull/1502/files#diff-a811990636acaacacca7288cd7ba5b220e4b8b10aff80f904ebca0349c6e02e4
     if batch_inference:
